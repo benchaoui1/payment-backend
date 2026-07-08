@@ -8,6 +8,11 @@ export type PayTestResponse = {
   message: "Payment API route is working";
 };
 
+export type SupabaseTestResponse = {
+  status: "ok";
+  count: number;
+};
+
 export type ErrorResponse = {
   status: "error";
   message: string;

@@ -37,6 +37,8 @@ Current variables:
 
 ```text
 SERVICE_URL=http://localhost:3000
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
 ```
 
 ## Validate
