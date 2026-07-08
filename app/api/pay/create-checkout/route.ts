@@ -1,5 +1,7 @@
+import { NextResponse } from "next/server";
+
 import type { CreateCheckoutRequestBody, CreateCheckoutSuccessResponse } from "@/types/api";
-import { jsonBadRequest, jsonNotFound, jsonOk, jsonServerError } from "@/utils/api-response";
+import { jsonOk, jsonServerError } from "@/utils/api-response";
 import { ALLOWED_ADDON_CODES, computeAmountCents } from "@/lib/pricing";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -8,6 +10,15 @@ const UNIQUE_VIOLATION = "23505"; // Postgres error code for a unique constraint
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return "Unknown error";
+}
+
+// Local 400/404 helpers — kept inside this route instead of api-response.ts so
+// this file never depends on that module already having these exports.
+function jsonBadRequest(message: string) {
+  return NextResponse.json({ status: "error", message }, { status: 400 });
+}
+function jsonNotFound(message: string) {
+  return NextResponse.json({ status: "error", message }, { status: 404 });
 }
 
 export async function POST(request: Request) {
