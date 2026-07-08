@@ -16,6 +16,22 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const UNIQUE_VIOLATION = "23505"; // Postgres error code for a unique constraint violation
 
 /* ---------------------------------------------------------------------
+   CORS — allow the WorldIDP frontend to call this endpoint from the
+   browser. Applied to every response this route returns, including
+   errors, plus a dedicated OPTIONS handler for the preflight request.
+   --------------------------------------------------------------------- */
+const ALLOWED_ORIGIN = "https://worldidp.vercel.app";
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+export function OPTIONS() {
+  return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+}
+
+/* ---------------------------------------------------------------------
    TEMPORARY internal pricing table.
    -----------------------------------------------------------------------
    `payment_products` does not currently store a price — only a
@@ -82,22 +98,22 @@ function getErrorMessage(error: unknown) {
 }
 
 function jsonOk<TBody extends object>(body: TBody) {
-  return NextResponse.json(body, { status: 200 });
+  return NextResponse.json(body, { status: 200, headers: CORS_HEADERS });
 }
 
 function jsonBadRequest(message: string) {
   const body: ErrorResponseBody = { status: "error", message };
-  return NextResponse.json(body, { status: 400 });
+  return NextResponse.json(body, { status: 400, headers: CORS_HEADERS });
 }
 
 function jsonNotFound(message: string) {
   const body: ErrorResponseBody = { status: "error", message };
-  return NextResponse.json(body, { status: 404 });
+  return NextResponse.json(body, { status: 404, headers: CORS_HEADERS });
 }
 
 function jsonServerError(message = "Internal server error") {
   const body: ErrorResponseBody = { status: "error", message };
-  return NextResponse.json(body, { status: 500 });
+  return NextResponse.json(body, { status: 500, headers: CORS_HEADERS });
 }
 
 export async function POST(request: Request) {
