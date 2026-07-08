@@ -1,24 +1,103 @@
 import { NextResponse } from "next/server";
 
-import type { CreateCheckoutRequestBody, CreateCheckoutSuccessResponse } from "@/types/api";
-import { jsonOk, jsonServerError } from "@/utils/api-response";
-import { ALLOWED_ADDON_CODES, computeAmountCents } from "@/lib/pricing";
+/* =========================================================================
+   POST /api/pay/create-checkout
+   -------------------------------------------------------------------------
+   Fully self-contained on purpose: after two build failures caused by this
+   route depending on other files (api-response.ts, types/api.ts,
+   lib/pricing.ts) that weren't actually present at the expected path in
+   the repo, EVERYTHING this route needs — response helpers, types, and
+   the temporary pricing table — is defined right here. The only project
+   import left is @/lib/supabase, which already exists and already works
+   (it's used by your other routes).
+   ========================================================================= */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const UNIQUE_VIOLATION = "23505"; // Postgres error code for a unique constraint violation
+
+/* ---------------------------------------------------------------------
+   TEMPORARY internal pricing table.
+   -----------------------------------------------------------------------
+   `payment_products` does not currently store a price — only a
+   `stripe_price_id` (a Stripe Price reference). Resolving the real amount
+   from that would require the Stripe SDK, which this step must not add.
+   Adding a price column to the schema is also out of scope right now.
+
+   TODO: once either of these becomes possible —
+     (a) resolve amount from Stripe via each product's stripe_price_id, or
+     (b) read a price/amount column added to payment_products —
+   replace PRODUCT_BASE_AMOUNTS_CENTS/ADDON_AMOUNTS_CENTS below. Nothing
+   else in this route needs to change; only computeAmountCents() and the
+   two tables below are pricing-specific.
+   --------------------------------------------------------------------- */
+const PRODUCT_BASE_AMOUNTS_CENTS: Record<string, number> = {
+  digital_1y: 4900,
+  digital_2y: 5500,
+  digital_3y: 5900,
+  print_1y: 7900,
+  print_2y: 8900,
+  print_3y: 9900,
+};
+
+const ADDON_AMOUNTS_CENTS: Record<string, number> = {
+  express_processing: 1900,
+};
+
+const ALLOWED_ADDON_CODES = Object.keys(ADDON_AMOUNTS_CENTS);
+
+function computeAmountCents(productCode: string, addons: string[]): number | null {
+  const base = PRODUCT_BASE_AMOUNTS_CENTS[productCode];
+  if (base == null) return null;
+  const addonsTotal = addons.reduce((sum, code) => sum + (ADDON_AMOUNTS_CENTS[code] ?? 0), 0);
+  return base + addonsTotal;
+}
+
+/* ---------------------------------------------------------------------
+   Request/response shapes + tiny JSON response helpers, local to this
+   route so it can never fail to build over a missing shared export.
+   --------------------------------------------------------------------- */
+type CreateCheckoutRequestBody = {
+  website?: unknown;
+  product_code?: unknown;
+  addons?: unknown;
+  customer_email?: unknown;
+  metadata?: unknown;
+};
+
+type CreateCheckoutSuccessResponse = {
+  success: true;
+  order_reference: string;
+  order_id: string;
+  status: "pending" | "paid" | "failed" | "cancelled";
+};
+
+type ErrorResponseBody = {
+  status: "error";
+  message: string;
+};
 
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   return "Unknown error";
 }
 
-// Local 400/404 helpers — kept inside this route instead of api-response.ts so
-// this file never depends on that module already having these exports.
-function jsonBadRequest(message: string) {
-  return NextResponse.json({ status: "error", message }, { status: 400 });
+function jsonOk<TBody extends object>(body: TBody) {
+  return NextResponse.json(body, { status: 200 });
 }
+
+function jsonBadRequest(message: string) {
+  const body: ErrorResponseBody = { status: "error", message };
+  return NextResponse.json(body, { status: 400 });
+}
+
 function jsonNotFound(message: string) {
-  return NextResponse.json({ status: "error", message }, { status: 404 });
+  const body: ErrorResponseBody = { status: "error", message };
+  return NextResponse.json(body, { status: 404 });
+}
+
+function jsonServerError(message = "Internal server error") {
+  const body: ErrorResponseBody = { status: "error", message };
+  return NextResponse.json(body, { status: 500 });
 }
 
 export async function POST(request: Request) {
@@ -58,8 +137,12 @@ export async function POST(request: Request) {
     customerEmail = trimmed;
   }
 
-  const metadata = body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata) ? body.metadata : {};
-  const orderReference = typeof metadata.order_reference === "string" ? metadata.order_reference.trim() : "";
+  const metadataInput =
+    body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+      ? (body.metadata as Record<string, unknown>)
+      : {};
+  const orderReference =
+    typeof metadataInput.order_reference === "string" ? metadataInput.order_reference.trim() : "";
   if (!orderReference) return jsonBadRequest("`metadata.order_reference` is required.");
 
   try {
@@ -102,7 +185,7 @@ export async function POST(request: Request) {
       // resolved from each product's Stripe Price), read it from the
       // product row instead of hardcoding "usd" here.
       currency: "usd",
-      metadata,
+      metadata: metadataInput,
       success_redirect_url: product.success_redirect_url,
       cancel_redirect_url: product.cancel_redirect_url,
     };
