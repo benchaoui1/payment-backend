@@ -56,7 +56,7 @@ const PRODUCT_BASE_AMOUNTS_CENTS: Record<string, number> = {
 };
 
 const ADDON_AMOUNTS_CENTS: Record<string, number> = {
-  express_processing: 1900,
+  express_processing: 1400,
 };
 
 const ALLOWED_ADDON_CODES = Object.keys(ADDON_AMOUNTS_CENTS);
