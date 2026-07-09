@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import Stripe from "stripe";
 
 /* =========================================================================
    POST /api/pay/create-checkout
@@ -14,6 +15,13 @@ import { NextResponse } from "next/server";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const UNIQUE_VIOLATION = "23505"; // Postgres error code for a unique constraint violation
+
+// TEST mode Stripe client. STRIPE_SECRET_KEY must be a Vercel env var (a
+// sk_test_... key while we're not live yet) — never hardcoded, never sent
+// to the frontend. No apiVersion pinned here on purpose: stripe-node uses
+// the version current at the time of the installed package's release,
+// which is the simplest correct default for a fresh integration.
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
 
 /* ---------------------------------------------------------------------
    CORS — allow the WorldIDP frontend to call this endpoint from the
@@ -85,6 +93,7 @@ type CreateCheckoutSuccessResponse = {
   order_reference: string;
   order_id: string;
   status: "pending" | "paid" | "failed" | "cancelled";
+  checkout_url?: string;
 };
 
 type ErrorResponseBody = {
@@ -169,7 +178,7 @@ export async function POST(request: Request) {
        ------------------------------------------------------------------- */
     const { data: product, error: productError } = await supabaseAdmin
       .from("payment_products")
-      .select("product_code, website, success_redirect_url, cancel_redirect_url")
+      .select("product_code, website, success_redirect_url, cancel_redirect_url, stripe_price_id")
       .eq("product_code", productCode)
       .eq("website", website)
       .eq("active", true)
@@ -178,6 +187,10 @@ export async function POST(request: Request) {
     if (productError) return jsonServerError(productError.message);
     if (!product) {
       return jsonNotFound(`No active product found for product_code "${productCode}" and website "${website}".`);
+    }
+
+    if (!product.stripe_price_id || product.stripe_price_id.startsWith("mock_")) {
+      return jsonServerError("Payment isn't fully configured for this product yet. Please try again shortly.");
     }
 
     const amount = computeAmountCents(productCode, addons);
@@ -237,13 +250,44 @@ export async function POST(request: Request) {
     }
 
     /* -------------------------------------------------------------------
-       6) Return the created order. No Stripe session is created here.
+       6) Create the Stripe Checkout Session (TEST mode) for the new order,
+          using only the existing stripe_price_id — no price_data, no
+          Payment Links. Then record the session id on the order.
+       ------------------------------------------------------------------- */
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      line_items: [{ price: product.stripe_price_id, quantity: 1 }],
+      customer_email: customerEmail || undefined,
+      success_url: product.success_redirect_url + "?order_reference=" + order.order_reference,
+      cancel_url: product.cancel_redirect_url + "?order_reference=" + order.order_reference,
+      metadata: {
+        order_id: order.id,
+        order_reference: order.order_reference,
+        product_code: product.product_code,
+        website: product.website,
+        application_id: (metadataInput.application_id as string | undefined) || "",
+      },
+    });
+
+    const { error: sessionUpdateError } = await supabaseAdmin
+      .from("payment_orders")
+      .update({ stripe_session_id: session.id })
+      .eq("id", order.id);
+    if (sessionUpdateError) {
+      // Not fatal — the customer can still pay via session.url even if this
+      // bookkeeping write fails. Log it so it isn't silently lost.
+      console.error("[create-checkout] failed to save stripe_session_id:", sessionUpdateError.message);
+    }
+
+    /* -------------------------------------------------------------------
+       7) Return the created order plus the Stripe Checkout URL.
        ------------------------------------------------------------------- */
     return jsonOk<CreateCheckoutSuccessResponse>({
       success: true,
       order_reference: order.order_reference,
       order_id: order.id,
       status: order.status,
+      checkout_url: session.url || undefined,
     });
   } catch (error) {
     return jsonServerError(getErrorMessage(error));
